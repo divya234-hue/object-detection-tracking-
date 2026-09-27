@@ -1,0 +1,11 @@
+2026-09-27 17:31:48 | INFO     | object_tracking | Starting Object Detection and Tracking application
+2026-09-27 17:31:48 | DEBUG    | object_tracking | Loaded config: AppConfig(video=VideoConfig(source=0, resize_width=640, save_output=True, output_path='outputs/output.mp4'), detection=DetectionConfig(model_path='yolov8n.pt', confidence_threshold=0.4), tracking=TrackingConfig(max_age=15, min_hits=3, iou_threshold=0.3), logging=LoggingConfig(log_dir='logs', save_tracks_json=True, tracks_json_path='logs/tracks.json'))
+2026-09-27 17:31:48 | INFO     | object_tracking | Loading YOLO model: yolov8n.pt
+2026-09-27 17:31:48 | INFO     | object_tracking | Model loaded. 80 classes available.
+2026-09-27 17:31:48 | INFO     | object_tracking | Tracker initialized (max_age=15, min_hits=3, iou_threshold=0.3)
+2026-09-27 17:31:49 | INFO     | object_tracking | Video source opened: 0
+2026-09-27 17:31:49 | INFO     | object_tracking | Press 'q' to quit, 's' to save a snapshot.
+2026-09-27 17:31:50 | INFO     | object_tracking | Saving output video to outputs/output.mp4
+2026-09-27 17:32:59 | INFO     | object_tracking | Video source released.
+2026-09-27 17:32:59 | INFO     | object_tracking | Track log saved to logs/tracks.json (1292 frames)
+2026-09-27 17:32:59 | INFO     | object_tracking | Cleanup complete. Application exited.

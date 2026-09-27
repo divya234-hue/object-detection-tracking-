@@ -1,0 +1,19 @@
+video:
+  source: 0                # 0 = webcam, or "video.mp4" for a file
+  resize_width: 640
+  save_output: true
+  output_path: "outputs/output.mp4"
+
+detection:
+  model_path: "yolov8n.pt"
+  confidence_threshold: 0.4
+
+tracking:
+  max_age: 15
+  min_hits: 3
+  iou_threshold: 0.3
+
+logging:
+  log_dir: "logs"
+  save_tracks_json: true
+  tracks_json_path: "logs/tracks.json"

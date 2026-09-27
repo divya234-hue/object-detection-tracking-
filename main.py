@@ -1,126 +1,135 @@
+"""
+main.py
+-------
+Entry point: loads config, sets up logging, runs the detection +
+tracking pipeline, optionally saves annotated video output and a
+JSON log of all tracked objects.
+"""
+
 import os
 import time
+
 import cv2
 
+from config import load_config, parse_cli_args, apply_cli_overrides
 from detector import Detector
+from exceptions import VideoSourceError, ModelLoadError, DetectionError, ConfigError
+from logger_setup import setup_logger
 from tracker import Tracker
-from utils import draw_tracked_objects, draw_fps
-
-# --------------------------------------------------------------------------
-# CONFIGURATION - change these values to customize behavior
-# --------------------------------------------------------------------------
-
-# Set to 0 (int) for webcam, or "video.mp4" (string path) for a video file.
-VIDEO_SOURCE = 0
-
-MODEL_PATH = "yolov8n.pt"       # swap to "yolo11n.pt" for the newer model
-CONFIDENCE_THRESHOLD = 0.4      # detections below this score are ignored
-RESIZE_WIDTH = 640              # set to None to disable resizing
-
-SAVE_DIR = "saved_frames"       # where 's' key saves snapshots
-
-# --------------------------------------------------------------------------
-
-
-def open_video_source(source):
-    """Opens webcam (int) or video file (str) and validates it opened correctly."""
-    if isinstance(source, str) and not os.path.exists(source):
-        raise FileNotFoundError(f"Video file not found: '{source}'")
-
-    cap = cv2.VideoCapture(source)
-
-    if not cap.isOpened():
-        if source == 0 or isinstance(source, int):
-            raise RuntimeError("Could not open webcam. Check that it's connected and not used by another app.")
-        else:
-            raise RuntimeError(f"Could not open video file: '{source}'")
-
-    return cap
-
-
-def resize_frame(frame, target_width):
-    """Resizes frame to target_width, keeping aspect ratio, to speed up CPU inference."""
-    if target_width is None:
-        return frame
-    h, w = frame.shape[:2]
-    if w == target_width:
-        return frame
-    scale = target_width / float(w)
-    new_h = int(h * scale)
-    return cv2.resize(frame, (target_width, new_h))
+from utils import draw_tracked_objects, draw_fps, TrackLogger
+from video_source import VideoSource, resize_frame
 
 
 def main():
-    print("Loading YOLO model...")
-    try:
-        detector = Detector(model_path=MODEL_PATH, confidence_threshold=CONFIDENCE_THRESHOLD)
-    except RuntimeError as e:
-        print(f"[ERROR] {e}")
-        return
-
-    tracker = Tracker(max_age=15, min_hits=3, iou_threshold=0.3)
+    args = parse_cli_args()
 
     try:
-        cap = open_video_source(VIDEO_SOURCE)
-    except (FileNotFoundError, RuntimeError) as e:
-        print(f"[ERROR] {e}")
+        config = load_config(args.config)
+        config = apply_cli_overrides(config, args)
+    except ConfigError as e:
+        print(f"[CONFIG ERROR] {e}")
         return
 
-    if not os.path.exists(SAVE_DIR):
-        os.makedirs(SAVE_DIR)
+    logger = setup_logger(log_dir=config.logging.log_dir)
+    logger.info("Starting Object Detection and Tracking application")
+    logger.debug(f"Loaded config: {config}")
 
-    print("Starting video stream. Press 'q' to quit, 's' to save a frame.")
+    try:
+        detector = Detector(
+            model_path=config.detection.model_path,
+            confidence_threshold=config.detection.confidence_threshold,
+        )
+    except ModelLoadError as e:
+        logger.error(str(e))
+        return
 
-    prev_time = time.time()
-    frame_count = 0
+    tracker = Tracker(
+        max_age=config.tracking.max_age,
+        min_hits=config.tracking.min_hits,
+        iou_threshold=config.tracking.iou_threshold,
+    )
 
-    while True:
-        ret, frame = cap.read()
+    track_logger = None
+    if config.logging.save_tracks_json:
+        track_logger = TrackLogger(config.logging.tracks_json_path, detector.class_names)
 
-        if not ret or frame is None:
-            print("[INFO] End of video stream / could not read frame.")
-            break
+    video_writer = None
 
-        frame = resize_frame(frame, RESIZE_WIDTH)
+    try:
+        with VideoSource(config.video.source) as video:
+            if config.video.save_output:
+                os.makedirs(os.path.dirname(config.video.output_path), exist_ok=True)
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                # dimensions determined after first frame is read
 
-        try:
-            detections = detector.detect(frame)
-        except ValueError as e:
-            print(f"[WARNING] Skipping invalid frame: {e}")
-            continue
-
-        # detections may be empty -> tracker.update handles that gracefully
-        tracked_objects = tracker.update(detections)
-
-        frame = draw_tracked_objects(frame, tracked_objects, detector.class_names)
-
-        # FPS calculation
-        frame_count += 1
-        curr_time = time.time()
-        elapsed = curr_time - prev_time
-        if elapsed >= 1.0:
-            fps = frame_count / elapsed
+            prev_time = time.time()
             frame_count = 0
-            prev_time = curr_time
-        else:
-            fps = frame_count / elapsed if elapsed > 0 else 0.0
+            fps_display = 0.0
 
-        frame = draw_fps(frame, fps)
+            logger.info("Press 'q' to quit, 's' to save a snapshot.")
 
-        cv2.imshow("Object Detection and Tracking", frame)
+            while True:
+                ret, frame = video.read()
+                if not ret or frame is None:
+                    logger.info("End of video stream / could not read frame.")
+                    break
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            print("[INFO] 'q' pressed. Exiting...")
-            break
-        elif key == ord("s"):
-            filename = os.path.join(SAVE_DIR, f"frame_{int(time.time())}.jpg")
-            cv2.imwrite(filename, frame)
-            print(f"[INFO] Frame saved to {filename}")
+                frame = resize_frame(frame, config.video.resize_width)
 
-    cap.release()
-    cv2.destroyAllWindows()
-    print("[INFO] Resources released. Goodbye!")
+                if config.video.save_output and video_writer is None:
+                    h, w = frame.shape[:2]
+                    video_writer = cv2.VideoWriter(
+                        config.video.output_path, fourcc, 20.0, (w, h)
+                    )
+                    logger.info(f"Saving output video to {config.video.output_path}")
+
+                try:
+                    detections = detector.detect(frame)
+                except DetectionError as e:
+                    logger.warning(f"Skipping frame due to detection error: {e}")
+                    continue
+
+                tracked_objects = tracker.update(detections)
+
+                if track_logger is not None:
+                    track_logger.log_frame(tracked_objects)
+
+                frame = draw_tracked_objects(frame, tracked_objects, detector.class_names)
+
+                frame_count += 1
+                elapsed = time.time() - prev_time
+                if elapsed >= 1.0:
+                    fps_display = frame_count / elapsed
+                    frame_count = 0
+                    prev_time = time.time()
+
+                frame = draw_fps(frame, fps_display)
+
+                if video_writer is not None:
+                    video_writer.write(frame)
+
+                if not args.no_display:
+                    cv2.imshow("Object Detection and Tracking", frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        logger.info("'q' pressed. Exiting...")
+                        break
+                    elif key == ord("s"):
+                        snap_path = f"outputs/snapshot_{int(time.time())}.jpg"
+                        os.makedirs("outputs", exist_ok=True)
+                        cv2.imwrite(snap_path, frame)
+                        logger.info(f"Snapshot saved to {snap_path}")
+
+    except VideoSourceError as e:
+        logger.error(str(e))
+        return
+    finally:
+        if video_writer is not None:
+            video_writer.release()
+        if track_logger is not None:
+            track_logger.save()
+        cv2.destroyAllWindows()
+        logger.info("Cleanup complete. Application exited.")
 
 
 if __name__ == "__main__":
